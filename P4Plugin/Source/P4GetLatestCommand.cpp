@@ -25,7 +25,7 @@ public:
 		
 		if (paths.empty())
 		{
-			Pipe().ErrorLine("No paths in getlatest perforce command", MARemote);
+			Pipe().WarnLine("No paths in getlatest perforce command", MARemote);
 			Pipe().EndResponse();
 			return true;
 		}
@@ -37,8 +37,7 @@ public:
 		
 		// Stat the files to get the most recent state.
 		// This could probably be optimized by reading the output of the command better
-		P4Command* statusCommand = RunAndSendStatus(task, incomingAssetList);
-		Pipe() << statusCommand->GetStatus();
+		RunAndSendStatus(task, incomingAssetList);
 		
 		// The OutputState and other callbacks will now output to stdout.
 		// We just wrap up the communication here.
@@ -72,6 +71,8 @@ public:
 			P4Command::OutputInfo(level, data);
 			return;
 		}
+
+		Pipe().VerboseLine(data);
 
 		// format e.g.:
 		// //depot/P4Test/Assets/Lars.meta#2 - updating /Users/foobar/UnityProjects/PerforceTest/P4Test/Assets/Lars.meta

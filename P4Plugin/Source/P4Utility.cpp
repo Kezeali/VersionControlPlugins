@@ -30,19 +30,25 @@ int ActionToState(const string& action, const string& headAction,
 		if (headAction == "add") state |= kAddedRemote;
 		else if (headAction == "move/add") state |= kAddedRemote;
 		else if (headAction == "edit") state |= kCheckedOutRemote;
-		else if (headAction == "delete") state |= kDeletedRemote;
+		else if (headAction == "delete") 
+		{
+			if (haveRev.empty())
+				state |= kLocal; // We have no revision locally and it has been deleted on server
+			else
+				state |= kDeletedRemote;
+		}
 		else if (headAction == "move/delete") state |= kDeletedRemote;
 		else state |= kOutOfSync;
-	} 
+	}
 	else if (headRev.empty())
 	{
-		state |= kLocal;
-	} 
-	else 
+		// state |= kLocal;
+	}
+	else
 	{
 		state |= kSynced;
 	}
-	
+
 	return state;
 }
 
@@ -83,7 +89,7 @@ string ResolvedPath(const VersionedAsset& asset, int flags)
 
 string ResolvePaths(VersionedAssetList::const_iterator b,
 					VersionedAssetList::const_iterator e,
-					int flags, const string& delim)
+					int flags, const string& delim, const string& postfix)
 {
 	string paths;
 	
@@ -95,6 +101,7 @@ string ResolvePaths(VersionedAssetList::const_iterator b,
 			continue;
 		paths += "\"";
 		paths += ResolvedPath(*i, flags);
+		paths += postfix;
 		paths += "\" ";
 	}
 	return paths;
@@ -113,9 +120,9 @@ void ResolvePaths(vector<string>& result,
 	}
 }
 
-string ResolvePaths(const VersionedAssetList& list, int flags, const string& delim)
+string ResolvePaths(const VersionedAssetList& list, int flags, const string& delim, const string& postfix)
 {
-	return ResolvePaths(list.begin(), list.end(), flags, delim);
+	return ResolvePaths(list.begin(), list.end(), flags, delim, postfix);
 }
 
 void ResolvePaths(vector<string>& result, const VersionedAssetList& list, int flags, const string& delim)

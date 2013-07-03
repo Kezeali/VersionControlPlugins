@@ -5,12 +5,12 @@
 
 using namespace std;
 
-VersionedAsset::VersionedAsset() : m_State(kLocal | kReadOnly)
+VersionedAsset::VersionedAsset() : m_State(kNone)
 { 
 	SetPath(""); 
 }
 
-VersionedAsset::VersionedAsset(const std::string& path) : m_State(kReadOnly) 
+VersionedAsset::VersionedAsset(const std::string& path) : m_State(kNone) 
 { 
 	SetPath(path); 
 }
@@ -63,9 +63,19 @@ void VersionedAsset::SetRevision(const std::string& r)
 	m_Revision = r;
 }
 
+const std::string& VersionedAsset::GetChangeListID() const
+{
+	return m_ChangeListID;
+}
+
+void VersionedAsset::SetChangeListID(const std::string& c)
+{
+	m_ChangeListID = c;
+}
+
 void VersionedAsset::Reset() 
 { 
-	m_State = kLocal | kReadOnly; 
+	m_State = kNone; 
 	SetPath(""); 
 	m_Revision.clear();
 }
@@ -73,6 +83,11 @@ void VersionedAsset::Reset()
 bool VersionedAsset::IsFolder() const 
 {
 	return m_Path[m_Path.size()-1] == '/';
+}
+
+bool VersionedAsset::operator<(const VersionedAsset& other) const
+{
+	return GetPath() < other.GetPath();
 }
 
 vector<string> Paths(const VersionedAssetList& assets)
@@ -92,8 +107,8 @@ vector<string> Paths(const VersionedAssetList& assets)
 
 UnityPipe& operator<<(UnityPipe& p, const VersionedAsset& asset)
 {
-	p.OkLine(asset.GetPath());
-	p.OkLine(asset.GetState());
+	p.DataLine(asset.GetPath());
+	p.DataLine(asset.GetState());
 	return p;
 }
 

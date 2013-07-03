@@ -40,16 +40,22 @@ public:
 		if (key == "vcPerforceUsername")
 		{
 			task.SetP4User(value);
-			task.Disconnect();
 		}
 		else if (key == "vcPerforceWorkspace")
 		{
 			task.SetP4Client(value);
-			task.Disconnect();
 		}
 		else if (key == "assetsPath")
 		{
-			task.SetAssetsPath(value);
+			// The asset path is just the rest of the config commands joined
+			string assetPath;
+			for (size_t i = 2; i < args.size(); ++i)
+			{
+				assetPath += args[i];
+				assetPath += " ";
+			}
+			task.SetAssetsPath(TrimEnd(assetPath));
+			Pipe().Log().Info() << "Set assetPath to" << assetPath << unityplugin::Endl;
 		}
 		else if (key == "vcSharedLogLevel")
 		{
@@ -67,57 +73,62 @@ public:
 		{
 			task.SetP4Password(value);
 			value = "*";
-			task.Disconnect();
 		}
 		else if (key == "vcPerforceServer")
 		{
-			string::size_type i = value.find(":");
 			if (value.empty())
 				value = "perforce";
+			
+			string::size_type i = (StartsWith(value, "ssl:") ? value.substr(4) : value).find(":");
 			if (i == string::npos)
 				value += ":1666"; // default port
 			task.SetP4Port(value);
-			task.Disconnect();
 		}
 		else if (key == "pluginVersions")
 		{
 			int sel = SelectVersion(args);
-			Pipe().OkLine(sel, MAConfig); 
+			Pipe().DataLine(sel, MAConfig); 
 			Pipe().Log().Info() << "Selected plugin protocol version " << sel << unityplugin::Endl;
 		}
 		else if (key == "pluginTraits")
 		{
-			Pipe().OkLine("4");
-			Pipe().OkLine("requiresNetwork", MAConfig); 			
-			Pipe().OkLine("enablesCheckout", MAConfig);
-			Pipe().OkLine("enablesLocking", MAConfig);
-			Pipe().OkLine("enablesRevertUnchanged", MAConfig);
+			Pipe().DataLine("4");
+			Pipe().DataLine("requiresNetwork", MAConfig); 			
+			Pipe().DataLine("enablesCheckout", MAConfig);
+			Pipe().DataLine("enablesLocking", MAConfig);
+			Pipe().DataLine("enablesRevertUnchanged", MAConfig);
 		
-			Pipe().OkLine("4");
-			Pipe().OkLine("vcPerforceUsername");
-			Pipe().OkLine("Username", MAConfig);
-			Pipe().OkLine("The perforce user name", MAConfig);
-			Pipe().OkLine("");
-			Pipe().OkLine("1"); // required field
+			Pipe().DataLine("4");
+			Pipe().DataLine("vcPerforceUsername");
+			Pipe().DataLine("Username", MAConfig);
+			Pipe().DataLine("The perforce user name", MAConfig);
+			Pipe().DataLine("");
+			Pipe().DataLine("1"); // required field
 
-			Pipe().OkLine("vcPerforcePassword");
-			Pipe().OkLine("Password", MAConfig);
-			Pipe().OkLine("The perforce password", MAConfig);
-			Pipe().OkLine("");
-			Pipe().OkLine("3"); // required field | password field
+			Pipe().DataLine("vcPerforcePassword");
+			Pipe().DataLine("Password", MAConfig);
+			Pipe().DataLine("The perforce password", MAConfig);
+			Pipe().DataLine("");
+			Pipe().DataLine("2"); // password field
 
-			Pipe().OkLine("vcPerforceWorkspace");
-			Pipe().OkLine("Workspace", MAConfig);
-			Pipe().OkLine("The perforce workspace/client", MAConfig);
-			Pipe().OkLine("");
-			Pipe().OkLine("1"); // required field
+			Pipe().DataLine("vcPerforceWorkspace");
+			Pipe().DataLine("Workspace", MAConfig);
+			Pipe().DataLine("The perforce workspace/client", MAConfig);
+			Pipe().DataLine("");
+			Pipe().DataLine("1"); // required field
 
-			Pipe().OkLine("vcPerforceServer");
-			Pipe().OkLine("Server", MAConfig);
-			Pipe().OkLine("The perforce server using format: hostname:port. Port hostname defaults to 'perforce' and port defaults to 1666", MAConfig);
-			Pipe().OkLine("perforce");
-			Pipe().OkLine("0"); // 
+			Pipe().DataLine("vcPerforceServer");
+			Pipe().DataLine("Server", MAConfig);
+			Pipe().DataLine("The perforce server using format: hostname:port. Port hostname defaults to 'perforce' and port defaults to 1666", MAConfig);
+			Pipe().DataLine("perforce");
+			Pipe().DataLine("0"); // 
 		} 
+		else if (key == "end")
+		{
+			task.Logout();
+			task.Disconnect();
+			task.DisableUTF8Mode();
+		}
 		else 
 		{
 			Pipe().WarnLine(ToString("Unknown config field set on version control plugin: ", key), MAConfig);

@@ -47,11 +47,21 @@ public:
 	
 protected:
 	P4Command(const char* name);
+	static bool HandleOnlineStatusOnError(Error *err);
 
 	// Many of the derived classes need to send updated
 	// state of a list. This is a convenience method to do that.
-	P4Command* RunAndSendStatus(P4Task& task, const VersionedAssetList& assetList);
+	static void RunAndSendStatus(P4Task& task, const VersionedAssetList& assetList);
 	bool m_AllowConnect;
+
+	struct Mapping 
+	{
+		std::string depotPath;
+		std::string clientPath;
+	};
+
+	static const std::vector<Mapping>& GetMappings(P4Task& task, const VersionedAssetList& assetList);
+	static bool MapToLocal(P4Task& task, VersionedAssetList& assets);
 
 	friend class P4Task;
 	static UnityPipe* s_UnityPipe;

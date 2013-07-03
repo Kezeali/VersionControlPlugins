@@ -9,6 +9,12 @@ public:
 	P4ChangeStatusCommand(const char* name) : P4StatusBaseCommand(name) {}
 	virtual bool Run(P4Task& task, const CommandArgs& args)
 	{
+		// Since the changestatus command is used to check for online state we start out by
+		// forcing online state to true and check if it has been set to false in the
+		// end to determine if we should send online notifications.
+		bool wasOnline = P4Task::IsOnline();
+		P4Task::SetOnline(true);
+
 		ClearStatus();
 		Pipe().Log().Info() << "ChangeStatusCommand::Run()" << unityplugin::Endl;
 		
@@ -27,6 +33,14 @@ public:
 		// We just wrap up the communication here.
 		Pipe().EndList();
 		Pipe() << GetStatus();
+
+		if (P4Task::IsOnline() && !wasOnline)
+		{
+			// If set to online already we cannot notify as online so we fake an offline state.
+			P4Task::SetOnline(false);
+			P4Task::NotifyOnline();
+		}
+
 		Pipe().EndResponse();
 		
 		return true;

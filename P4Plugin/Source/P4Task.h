@@ -37,6 +37,15 @@ public:
 	// Returns true on success
 	bool CommandRun( const std::string& command, P4Command* client );
 	bool Disconnect();
+	
+	static void NotifyOffline(const std::string& reason);
+	static void NotifyOnline();
+	
+	// Set but do not notify unity about it
+	static void SetOnline(bool isOnline);
+	static bool IsOnline();
+	void Logout();
+	void DisableUTF8Mode();
 
 private:
 
@@ -44,10 +53,14 @@ private:
 
 	// Connection
 	bool Connect();
-	bool Login();
 
-	void NotifyOffline(const std::string& reason);
-	void NotifyOnline();
+	void EnableUTF8Mode();
+
+	bool Login();
+	bool HasUnicodeNeededError(VCSStatus status);
+	
+
+	bool m_IsOnline;
 
 	// Perforce connection
 	bool            m_P4Connect;
@@ -68,4 +81,6 @@ private:
 	Task* m_Task;
 
 	friend class P4Command;
+	static P4Task* s_Singleton;
 };
+

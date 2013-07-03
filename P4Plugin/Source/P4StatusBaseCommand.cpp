@@ -5,12 +5,15 @@
 
 using namespace std;
 
-P4StatusBaseCommand::P4StatusBaseCommand(const char* name) : P4Command(name) 
+P4StatusBaseCommand::P4StatusBaseCommand(const char* name) : P4Command(name)
 {
 }
 
 void P4StatusBaseCommand::OutputStat( StrDict *varList )
 {
+	if (!P4Task::IsOnline())
+		return;
+
 	const string invalidPath = "//...";
 	const string notFound = " - no such file(s).";
 	
@@ -96,15 +99,24 @@ void P4StatusBaseCommand::OutputStat( StrDict *varList )
 	if (!isStateSet)
 	{
 		int baseState = current.GetState() & ( kCheckedOutRemote | kLockedLocal | kLockedRemote | kConflicted | kReadOnly | kMetaFile );
-		current.SetState(ActionToState(action, headAction, haveRev, headRev) | baseState);
+		int newState = ActionToState(action, headAction, haveRev, headRev) | baseState;
+		
+		current.SetState(newState);
+
+		// Make sure it is actually present locally
+		if ( (newState & kLocal) && 
+			 !PathExists(current.GetPath()) )
+			current.RemoveState(kLocal);
 	}
+
+	Pipe().VerboseLine(current.GetPath());
 	
 	Pipe() << current;
 }
 
 void P4StatusBaseCommand::HandleError( Error *err )
 {
-	if ( err == 0 )
+	if ( err == 0  || !P4Task::IsOnline())
 		return;
 	
 	StrBuf buf;
@@ -123,22 +135,25 @@ void P4StatusBaseCommand::HandleError( Error *err )
 			// tried to get status with no files matching wildcard //... which is ok
 			// or
 			// tried to get status of empty dir ie. not matching /path/to/empty/dir/... which is ok
+			Pipe().VerboseLine(value);
 			return;
 		}
 		else if (AddUnknown(asset, value))
 		{
 			Pipe() << asset;
+			Pipe().VerboseLine(value);
 			return; // just ignore errors for unknown files and return them anyway
 		} 
 	}
-	
-	P4Command::HandleError(err);
+
+	if (HandleOnlineStatusOnError(err))
+		P4Command::HandleError(err);
 }
 
 bool P4StatusBaseCommand::AddUnknown(VersionedAsset& current, const string& value)
 {
 	const string notFound = " - no such file(s).";
-	
+
 	current.SetPath(WildcardsRemove(value.substr(0, value.length() - notFound.length())));
 	int baseState = current.GetState() & ( kConflicted | kReadOnly | kMetaFile );
 	current.SetState(kLocal | baseState);
@@ -146,9 +161,9 @@ bool P4StatusBaseCommand::AddUnknown(VersionedAsset& current, const string& valu
 	current.RemoveState(kLockedRemote);
 	if (IsReadOnly(current.GetPath()))
 		current.AddState(kReadOnly);
-	else 
+	else
 		current.RemoveState(kReadOnly);
-	
+
 	if (EndsWith(current.GetPath(), "*")) 
 		return false; // skip invalid files
 	return true; 

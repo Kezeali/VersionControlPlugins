@@ -34,6 +34,7 @@ public:
 			Pipe().Log().Debug() << "Is logged in: " << (m_LoggedIn ? "yes" : "no") << unityplugin::Endl;
 		else
 			Pipe().Log().Info() << "Login " << (m_LoggedIn ? "succeeded" : "failed") << unityplugin::Endl;
+
 		m_CheckingForLoggedIn = false;
 		return m_LoggedIn;
 	}
@@ -42,6 +43,12 @@ public:
     {
 		string d(data);
 		Pipe().Log().Debug() << "OutputInfo: " << d << unityplugin::Endl;
+		Pipe().VerboseLine(d);
+
+		m_LoggedIn = d == "'login' not necessary, no password set for this user.";
+		if (m_LoggedIn)
+			return;
+
 		if (m_CheckingForLoggedIn)
 		{
 			m_LoggedIn = StartsWith(d, "User ") && d.find(" ticket expires in ") != string::npos;
@@ -49,7 +56,7 @@ public:
 		else
 		{
 			m_LoggedIn = StartsWith(d, "User ") && EndsWith(d, " logged in.");
-			if (m_LoggedIn) 
+			if (m_LoggedIn)
 				return;
 			GetStatus().insert(VCSStatusItem(VCSSEV_Error, d));
 		}
@@ -60,7 +67,18 @@ public:
 	{
 		if ( err == 0 )
 			return;
-		
+
+		StrBuf buf;
+		err->Fmt(&buf);
+		string value(buf.Text());
+
+		if (value.find("Unicode server permits only unicode enabled clients") != string::npos)
+		{
+			VCSStatus s = errorToVCSStatus(*err);
+			GetStatus().insert(s.begin(), s.end());
+			return; // Do not propegate. It will be handled by P4Task 
+		}
+
 		// Suppress errors when just checking for logged in state
 		if (m_CheckingForLoggedIn)
 			return;
@@ -69,20 +87,13 @@ public:
 		P4Command::HandleError( err );
 	}
 
-	void OutputError( const char *errBuf )
-	{
-		if (StartsWith(string(errBuf), "Perforce password (P4PASSWD) invalid or unset."))
-		{
-			Pipe().ErrorLine(errBuf);
-		}
-	}
-
 	// Entering password
 	void Prompt( const StrPtr &msg, StrBuf &buf, int noEcho ,Error *e )
 	{
 		Pipe().Log().Info() << "Prompted for password by server" << unityplugin::Endl;
 		Pipe().Log().Debug() << "Prompt: " << msg.Text() << unityplugin::Endl;
 		buf.Set(m_Password.c_str());
+		Pipe().VerboseLine("Prompted for password");
 	}
 	
 private:

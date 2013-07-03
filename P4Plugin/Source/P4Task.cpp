@@ -1,7 +1,9 @@
 #include "P4Task.h"
 #include "P4Command.h"
 #include "error.h"
+#include "i18napi.h"
 #include "msgclient.h"
+#include "msgserver.h"
 #include "CommandLine.h"
 #include "Utility.h"
 #include "FileSystem.h"
@@ -35,9 +37,9 @@ VCSStatus errorToVCSStatus(Error& e)
 			sev = VCSSEV_Info;
 			break;
 		case E_WARN: // a minor error occurred
+		case E_FAILED: // the command was used incorrectly
 			sev = VCSSEV_Warn;
 			break;
-		case E_FAILED: // the command was used incorrectly
 		case E_FATAL:  // fatal error, the command can't be processed
 			sev = VCSSEV_Error;
 			break;
@@ -45,6 +47,9 @@ VCSStatus errorToVCSStatus(Error& e)
 			break;
 	}
 
+	if (e.CheckId(MsgClient::ClobberFile)) // TODO: Check if clobberfile is severity failed and remove if so
+		sev = VCSSEV_Warn;
+		
 	StrBuf msg;
 	e.Fmt(&msg);
 	VCSStatus status;
@@ -54,11 +59,15 @@ VCSStatus errorToVCSStatus(Error& e)
 	return status;
 }
 
+P4Task* P4Task::s_Singleton = NULL;
+
 // This class essentially manages the command line interface to the API and replies.  Commands are read from stdin and results
 // written to stdout and errors to stderr.  All text based communications used tags to make the parsing easier on both ends.
 P4Task::P4Task()
 {
     m_P4Connect = false;
+	m_IsOnline = false;
+	s_Singleton = this;
 }
 
 P4Task::~P4Task()
@@ -70,6 +79,7 @@ void P4Task::SetP4Port(const string& p)
 { 
 	m_Client.SetPort(p.c_str()); 
 	m_PortConfig = p;
+	m_IsOnline = false;
 }
 
 string P4Task::GetP4Port() const
@@ -81,32 +91,42 @@ void P4Task::SetP4User(const string& u)
 { 
 	m_Client.SetUser(u.c_str()); 
 	m_UserConfig = u;
+	m_IsOnline = false;
 }
 
 string P4Task::GetP4User()
-{ 
+{
 	return m_Client.GetUser().Text();
 }
 
 void P4Task::SetP4Client(const string& c)
-{ 
+{
 	m_Client.SetClient(c.c_str()); 
 	m_ClientConfig = c;
+	m_IsOnline = false;
 }
 
 string P4Task::GetP4Client()
-{ 
+{
 	return m_Client.GetClient().Text(); 
 }
 
 void P4Task::SetP4Password(const string& p)
-{ 
-	m_Client.SetPassword(p.c_str()); 
+{
+	if (p.empty())
+	{
+		m_Client.SetIgnorePassword();
+	}
+	else
+	{
+		m_Client.SetPassword(p.c_str());
+	}
 	m_PasswordConfig = p;
+	m_IsOnline = false;
 }
 
 const string& P4Task::GetP4Password() const
-{ 
+{
 	return m_PasswordConfig;
 }
 
@@ -124,6 +144,7 @@ void P4Task::SetP4Root(const string& r)
 void P4Task::SetAssetsPath(const std::string& p)
 {
 	m_AssetsPathConfig = p;
+	m_IsOnline = false;
 }
 
 const std::string& P4Task::GetAssetsPath() const
@@ -135,23 +156,31 @@ int P4Task::Run()
 {
 	m_Task = new Task("./Library/p4plugin.log");
 
-	UnityCommand cmd;
-	vector<string> args;
 
-	for ( ;; )
+	try 
 	{
-		cmd = m_Task->ReadCommand(args);
-
-		// Make it convenient to get the pipe even though the commands
-		// are callback based.
-		P4Command::s_UnityPipe = &m_Task->Pipe();
-
-		if (cmd == UCOM_Invalid)
-			return 1; // error
-		else if (cmd == UCOM_Shutdown)
-			return 0; // ok 
-		else if (!Dispatch(cmd, args))
-			return 0; // ok
+		UnityCommand cmd;
+		vector<string> args;
+		
+		for ( ;; )
+		{
+			cmd = m_Task->ReadCommand(args);
+			
+			// Make it convenient to get the pipe even though the commands
+			// are callback based.
+			P4Command::s_UnityPipe = &m_Task->Pipe();
+			
+			if (cmd == UCOM_Invalid)
+				return 1; // error
+			else if (cmd == UCOM_Shutdown)
+				return 0; // ok 
+			else if (!Dispatch(cmd, args))
+				return 0; // ok
+		}
+	} 
+	catch (exception& e)
+	{
+		m_Task->Log().Fatal() << "Unhandled exception: " << e.what() << unityplugin::Endl;
 	}
 	return 1;
 }
@@ -191,25 +220,30 @@ bool P4Task::Connect()
 	SetP4Root("");
 	m_Client.SetPort(GetP4Port().c_str()); 
 	m_Client.SetUser(m_UserConfig.c_str());
-	m_Client.SetPassword(m_PasswordConfig.c_str());
+	if (m_PasswordConfig.empty())
+		m_Client.SetIgnorePassword();
+	else
+		m_Client.SetPassword(m_PasswordConfig.c_str());
 	m_Client.SetClient(m_ClientConfig.c_str());
+	
 	m_Client.Init( &m_Error );
 	
 	VCSStatus status = errorToVCSStatus(m_Error);
-	if (status.begin()->severity == VCSSEV_Error)
-	{ 
-		if (StartsWith(status.begin()->message, "Connect to server failed; check $P4PORT."))
-			NotifyOffline(string("Could not connect to Perforce server '") + GetP4Port() + "'");
-		else if (StartsWith(status.begin()->message, "TCP connect to"))
-			NotifyOffline(string("Could not connect to Perforce server: '") + GetP4Port() + "'");
-		else if (StartsWith(status.begin()->message, string("Client '") + m_ClientConfig + "' unknown"))
-			NotifyOffline(string("Perforce workspace '") + m_ClientConfig + "' does not exist on server: '" + GetP4Port() + "'");
-		else
-			SendToPipe(m_Task->Pipe(), status, MAProtocol);
-	} 
-	else
+
+	// Retry in case of unicode needs to be enabled on client	
+	if (HasUnicodeNeededError(status))
 	{
-		SendToPipe(m_Task->Pipe(), status, MAProtocol);
+		m_Error.Clear();
+		EnableUTF8Mode();
+
+		m_Client.Init( &m_Error );
+		VCSStatus status = errorToVCSStatus(m_Error);
+	}
+
+	if (status.size())
+	{
+		if (P4Command::HandleOnlineStatusOnError(&m_Error))
+			SendToPipe(m_Task->Pipe(), status, MAProtocol);
 	}
 
 	if( m_Error.Test() )
@@ -234,13 +268,16 @@ void P4Task::NotifyOffline(const string& reason)
 		"submit", "unlock", 
 		0
 	};
+
+	s_Singleton->m_IsOnline = false;
+
 	int i = 0;
 	while (disableCmds[i])
 	{
-		m_Task->Pipe().Command(string("disableCommand ") + disableCmds[i], MAProtocol);
+		s_Singleton->m_Task->Pipe().Command(string("disableCommand ") + disableCmds[i], MAProtocol);
 		++i;
 	}
-	m_Task->Pipe().Command(string("offline ") + reason, MAProtocol);
+	s_Singleton->m_Task->Pipe().Command(string("offline ") + reason, MAProtocol);
 }
 
 void P4Task::NotifyOnline()
@@ -255,13 +292,27 @@ void P4Task::NotifyOnline()
 		"submit", "unlock", 
 		0
 	};
-	m_Task->Pipe().Command("online", MAProtocol);
+	if (s_Singleton->m_IsOnline)
+		return;
+
+	s_Singleton->m_Task->Pipe().Command("online", MAProtocol);
 	int i = 0;
 	while (enableCmds[i])
 	{
-		m_Task->Pipe().Command(string("enableCommand ") + enableCmds[i], MAProtocol);
+		s_Singleton->m_Task->Pipe().Command(string("enableCommand ") + enableCmds[i], MAProtocol);
 		++i;
 	}
+	s_Singleton->m_IsOnline = true;
+}
+
+void P4Task::SetOnline(bool isOnline)
+{
+	s_Singleton->m_IsOnline = isOnline;
+}
+
+bool P4Task::IsOnline()
+{
+	return s_Singleton->m_IsOnline;
 }
 
 bool P4Task::Login()
@@ -272,18 +323,38 @@ bool P4Task::Login()
 	args.push_back("login");
 	args.push_back("-s");
 	bool loggedIn = p4c->Run(*this, args); 
+
+	if (HasUnicodeNeededError(p4c->GetStatus()))
+	{
+		m_Task->Pipe().InfoLine("Enabling unicode mode");
+		EnableUTF8Mode();
+		loggedIn = p4c->Run(*this, args);
+	}
+
 	SendToPipe(m_Task->Pipe(), p4c->GetStatus(), MAProtocol);
 	
-	if (loggedIn) 
+	if (loggedIn)
 	{
-		NotifyOnline(); // TODO: fix so that we do not send this for all requests.
 		return true; // All is fine. We're already logged in
+	}
+
+	if (GetP4Password().empty())
+	{
+		m_Task->Log().Debug() << "Empty password -> skipping login" << unityplugin::Endl;
+		return true;
 	}
 
 	// Do the actual login
 	args.clear();
 	args.push_back("login");
 	loggedIn = p4c->Run(*this, args); 
+	
+	if (HasUnicodeNeededError(p4c->GetStatus()))
+	{
+		EnableUTF8Mode();
+		loggedIn = p4c->Run(*this, args);
+	}
+
 	SendToPipe(m_Task->Pipe(), p4c->GetStatus(), MAProtocol);
 
 	if (!loggedIn)
@@ -299,15 +370,21 @@ bool P4Task::Login()
 		vector<string> args;
 		args.push_back("spec");
 		bool res = p4c->Run(*this, args); // fetched root info
-		if (res)
-			NotifyOnline();
 		SendToPipe(m_Task->Pipe(), p4c->GetStatus(), MAProtocol);
 		if (!res)
 			NotifyOffline("Couldn't fetch client spec file from perforce server");
 		return res;
 	}
-	NotifyOnline();
 	return true; // root reused
+}
+
+void P4Task::Logout()
+{
+	m_IsOnline = false;
+
+	P4Command* p4c = LookupCommand("logout");
+	CommandArgs args;
+	p4c->Run(*this, args); 
 }
 
 // Finalise the perforce client 
@@ -315,11 +392,17 @@ bool P4Task::Disconnect()
 {
     m_Error.Clear();
 
+	m_IsOnline = false;
+
     if ( !m_P4Connect ) // Nothing to do?
-        return true;
+	{
+		return true;
+	}
 
 	m_Client.Final( &m_Error );
     m_P4Connect = false;
+
+	// NotifyOffline("Disconnected");
 
 	VCSStatus status = errorToVCSStatus(m_Error);
 	SendToPipe(m_Task->Pipe(), status, MAProtocol);
@@ -339,8 +422,10 @@ bool P4Task::IsConnected()
 // Run a perforce command
 bool P4Task::CommandRun(const string& command, P4Command* client)
 {
-	m_Task->Log().Info() << command << unityplugin::Endl;
 	
+	m_Task->Log().Info() << command << unityplugin::Endl;
+	m_Task->Pipe().VerboseLine(command);
+
 	// Force connection if this hasn't been set-up already.
 	// That is unless the command explicitely disallows connect.
 	if (!client->ConnectAllowed() || Connect())
@@ -360,3 +445,25 @@ bool P4Task::CommandRun(const string& command, P4Command* client)
 	}
 	return !client->HasErrors();
 }
+
+bool P4Task::HasUnicodeNeededError( VCSStatus status )
+{
+	return StatusContains(status, "Unicode server permits only unicode enabled clients");
+}
+
+void P4Task::EnableUTF8Mode()
+{
+	CharSetApi::CharSet cs = CharSetApi::UTF_8;
+	m_Client.SetTrans( cs, cs, cs, cs );
+	m_Client.SetCharset("utf8");
+}
+
+void P4Task::DisableUTF8Mode()
+{
+	m_Client.SetCharset("");
+	CharSetApi::CharSet cs = CharSetApi::NOCONV;
+	m_Client.SetTrans( cs, -2, -2, -2 );
+}
+
+
+

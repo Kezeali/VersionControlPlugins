@@ -75,13 +75,47 @@ POpen::POpen(const string& cmd) : m_Command(cmd)
 
 	// If an error occurs, exit the application. 
 	Enforce<PluginException>(bSuccess == TRUE, string("Could not start '") + cmd + "'" + ErrorCodeToMsg(GetLastError()));
-
+	
 	// Close the client pipe ends here or we will keep the handles open even though the
 	// client has terminated. This is turn would block reads/writes and we would get EOL.
 	CloseHandle(m_ChildStd_OUT_Wr);
 	CloseHandle(m_ChildStd_IN_Rd);
 	m_ChildStd_OUT_Wr = NULL;
 	m_ChildStd_IN_Rd = NULL;
+
+	// We need to wait for proper initialization of the process (e.g. dll loading)
+	// before we can be confident that the process is running ok.
+	DWORD msWait = 10000; // Wait at most 10 seconds 
+	DWORD exitCode;
+	DWORD waitRes = WaitForInputIdle(m_ProcInfo.hProcess, msWait);
+	switch (waitRes)
+	{
+	case WAIT_TIMEOUT:
+		throw PluginException(string("Timed out starting '" + cmd + "'"));
+	case WAIT_FAILED:
+		{
+			if (!GetExitCodeProcess(m_ProcInfo.hProcess, &exitCode))
+				throw PluginException(string("Could not get exit code for failed process '") + cmd + "': " + LastErrorToMsg());
+
+			if (exitCode == STILL_ACTIVE)
+			{
+				//WaitForSingleObject(m_ProcInfo.hProcess, msWait);
+				//GetExitCodeProcess(m_ProcInfo.hProcess, &exitCode);
+			}
+			else
+			{
+				throw PluginException(string("Process failed '") + cmd + "' exit code " + IntToString(exitCode));
+			}
+		}
+	default:
+		break;
+	}
+
+	if (!GetExitCodeProcess(m_ProcInfo.hProcess, &exitCode))
+		throw PluginException(string("Could not get exit code for process '") + cmd + "': " + LastErrorToMsg());
+
+	if (exitCode != STILL_ACTIVE && exitCode != 0)
+		throw PluginException(string("Failed to start process '") + cmd + "' exit code " + IntToString(exitCode));
 }
 
 POpen::~POpen()
@@ -214,6 +248,8 @@ void POpen::ReadIntoFile(const std::string& path)
 
 #else // posix
 
+#include <string.h>
+
 POpen::POpen(const string& cmd) : m_Command(cmd)
 {
 	m_Handle = popen((cmd + " 2>&1").c_str(), "r");
@@ -268,8 +304,15 @@ void POpen::ReadIntoFile(const std::string& path)
 	}
 
 	size_t bytes = fread(buf, 1, BUFSIZE, m_Handle);
-	while (bytes == BUFSIZE)
+	while (!ferror(m_Handle))
 	{
+		if (bytes == 0 && feof(m_Handle))
+		{
+			// done ok
+			fclose(fh);
+			return;
+		}
+
 		if (fwrite(buf, 1, bytes, fh) != bytes)
 		{
 			// Error writing to disk
@@ -279,25 +322,12 @@ void POpen::ReadIntoFile(const std::string& path)
 		bytes = fread(buf, BUFSIZE, 1, m_Handle);
 	}
 
-	if (feof(m_Handle))
-	{
-		if (bytes && fwrite(buf, 1, bytes, fh) != bytes)
-		{
-			// Error writing to disk
-			fclose(fh);
-			throw PluginException(string("Error writing process end output into file: ") + path);
-		}
-		fclose(fh);
-	}
-	else
-	{
-		stringstream os;
-		os << "Error writing process output to file: ";
-		os << path << " code " << ferror(fh);
-		os << " for command " <<  m_Command << std::endl;
-		fclose(fh);
-		throw PluginException(os.str());
-	}
+	stringstream os;
+	os << "Error writing process output to file: ";
+	os << path << " code " << ferror(fh);
+	os << " for command " <<  m_Command << std::endl;
+	fclose(fh);
+	throw PluginException(os.str());
 }
 
 #endif // end defined(_WINDOWS) or posix

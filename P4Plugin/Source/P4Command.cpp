@@ -1,7 +1,11 @@
 #include "P4StatusCommand.h"
+#include "P4Utility.h"
+#include "msgclient.h"
+#include "msgserver.h"
 
 #include <map>
 #include <cassert>
+#include <sstream>
 
 using namespace std;
 
@@ -16,7 +20,7 @@ UnityPipe& SendToPipe(UnityPipe& p, const VCSStatus& st, MessageArea ma, bool sa
 			if (safeSend)
 				p.InfoLine(i->message, ma);
 			else
-				p.OkLine(i->message, ma);
+				p.VerboseLine(i->message, ma);
 			break;
 		case VCSSEV_Info:
 			p.InfoLine(i->message, ma);
@@ -124,6 +128,7 @@ void P4Command::InputData( StrBuf *buf, Error *err )
 
 void P4Command::Prompt( const StrPtr &msg, StrBuf &buf, int noEcho ,Error *e )
 {
+	Pipe().VerboseLine("Prompting...");
 	Pipe().Log().Info() << "Default ClientUser Prompt(" << msg.Text() << ")\n";
 }
 
@@ -140,18 +145,69 @@ void P4Command::HandleError( Error *err )
 {
 	if ( err == 0 )
 		return;
-	
+
 	VCSStatus s = errorToVCSStatus(*err);
 	m_Status.insert(s.begin(), s.end());
 
 	// Base implementation. Will callback to P4Command::OutputError 
-	ClientUser::HandleError( err );
+	// But only do so if the online state handler hasn't dealt with the issue
+	if (HandleOnlineStatusOnError(err))
+		ClientUser::HandleError( err );
 }
 
 // Default handler of perforce error calbacks
 void P4Command::OutputError( const char *errBuf )
 {
-	Pipe().Log().Notice() << errBuf << "\n";
+	Pipe().WarnLine(errBuf);
+	Pipe().Log().Debug() << "error: " << errBuf << unityplugin::Endl;
+}
+
+static bool ErrorStringMatch(Error *err, const char* msg)
+{
+	StrBuf buf;
+	err->Fmt(&buf);
+	string value(buf.Text());
+	return value.find(msg) != string::npos;
+}
+
+bool P4Command::HandleOnlineStatusOnError(Error *err)
+{
+	if (err->IsError())
+	{
+		StrBuf buf;
+		err->Fmt(&buf);
+		string value(buf.Text());
+
+		if (ErrorStringMatch(err, "Connect to server failed; check $P4PORT."))
+			P4Task::NotifyOffline("Couldn't connect to the perforce server");
+
+		else if (ErrorStringMatch(err, "TCP connect to"))
+			P4Task::NotifyOffline(string("Could not connect to Perforce server"));
+
+		else if (ErrorStringMatch(err, "Perforce password (P4PASSWD) invalid or unset."))
+			P4Task::NotifyOffline("Perforce password invalid or unset");
+
+		else if (ErrorStringMatch(err, " - must create client '"))
+			P4Task::NotifyOffline("Client workspace not present on perforce server. Check your Editor Settings.");	
+
+		else if (ErrorStringMatch(err, "Connect to server failed; check $P4PORT."))
+			P4Task::NotifyOffline("Could not connect to Perforce server");
+
+		else if (value.find("Client '") != string::npos && value.find("' unknown") != string::npos)
+			P4Task::NotifyOffline("Perforce workspace does not exist on server. Check your Editor Settings.");
+
+		else
+		{
+			Pipe().Log().Notice() << "Unhandled status error -> " << value << unityplugin::Endl;
+			return true;
+		}
+
+		Pipe().InfoLine(value);
+		Pipe().Log().Notice() << value << unityplugin::Endl;
+ 
+		return false;
+	}
+	return true;
 }
 
 void P4Command::ErrorPause( char* errBuf, Error* e)
@@ -176,19 +232,109 @@ void P4Command::OutputBinary( const char *data, int length)
 void P4Command::OutputInfo( char level, const char *data )
 {
 	Pipe().Log().Info() << "level " << (int) level << ": " << data << unityplugin::Endl;
+	std::stringstream ss;
+	ss << data << " (level " << (int) level << ")";	
+	Pipe().InfoLine(ss.str());
 }
 
-P4Command* P4Command::RunAndSendStatus(P4Task& task, const VersionedAssetList& assetList)
+void P4Command::RunAndSendStatus(P4Task& task, const VersionedAssetList& assetList)
 {
 	P4StatusCommand* c = dynamic_cast<P4StatusCommand*>(LookupCommand("status"));
 	if (!c)
 	{
 		Pipe().ErrorLine("Cannot locate status command");
-		return this; // Returning this is just to keep things running.
+		return; // Returning this is just to keep things running.
 	}
 	
 	bool recursive = false;
 	c->RunAndSend(task, assetList, recursive);
-	return c;
+	Pipe() << c->GetStatus();
 }
 
+const char * kDelim = "_XUDELIMX_"; // magic delimiter
+
+static class P4WhereCommand : public P4Command
+{
+public:
+	
+
+	P4WhereCommand() : P4Command("where") {}
+
+	bool Run(P4Task& task, const CommandArgs& args) 
+	{ 
+		mappings.clear();
+		ClearStatus();
+		return true;
+	}
+			
+	// Default handle of perforce info callbacks. Called by the default P4Command::Message() handler.
+	virtual void OutputInfo( char level, const char *data )
+	{	
+		// Level 48 is the correct level for view mapping lines. P4 API is really not good at providing these numbers
+		string msg(data);
+		bool propergate = true;
+		if (level == 48 && msg.length() > 1)
+		{
+			// format of the string should be
+			// depotPath workspacePath absFilePath
+			// e.g.
+			// //depot/Project/foo.txt //myworkspace/Project/foo.txt /Users/obama/MyProjects/P4/myworkspace/Project/foo.txt
+			// Each path has a postfix of kDelim that we have added in order to tokenize the 
+			// result into the three paths. Perforce doesn't check if files exists it just
+			// shows the mappings and therefore this will work.
+
+			string::size_type i = msg.find(kDelim); // depotPath end
+			string::size_type j = msg.find(kDelim, i+1); // workspacePath end
+			j += 10 + 1; // kDelim.length + (1 space) = start of clientPath
+			string::size_type k = msg.find(kDelim, j); // clientPath end
+			if (i != string::npos && i > 2 && k != string::npos)
+			{
+				propergate = false;
+				P4Command::Mapping m = { msg.substr(0, i), Replace(msg.substr(j, k-j), "\\", "/") };
+				mappings.push_back(m);
+			}
+		}	
+
+		if (propergate)
+			P4Command::OutputInfo(level, data);
+	}
+	
+	vector<Mapping> mappings;
+	
+} cWhere;
+
+const std::vector<P4Command::Mapping>& P4Command::GetMappings(P4Task& task, const VersionedAssetList& assets)
+{
+	cWhere.mappings.reserve(assets.size());
+	cWhere.mappings.clear();
+	cWhere.ClearStatus();
+	
+	if (assets.empty())
+		return cWhere.mappings;
+
+	string localPaths = ResolvePaths(assets, kPathWild | kPathSkipFolders, "", kDelim);
+	
+	task.CommandRun("where " + localPaths, &cWhere);
+	Pipe() << cWhere.GetStatus();
+	
+	if (cWhere.HasErrors())
+	{
+		// Abort since there was an error mapping files to depot path
+		cWhere.mappings.clear();
+	}
+	return cWhere.mappings;
+}
+
+bool P4Command::MapToLocal(P4Task& task, VersionedAssetList& assets)
+{
+	const vector<Mapping>& mappings = GetMappings(task, assets);
+	if (mappings.size() != assets.size())
+		return false; // error
+
+	vector<Mapping>::const_iterator m = mappings.begin();
+	for (VersionedAssetList::iterator i = assets.begin(); i != assets.end(); ++i, ++m)
+	{
+		i->SetPath(m->clientPath);
+	}
+	return true;
+}

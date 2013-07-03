@@ -32,7 +32,7 @@ public:
 		
 		// const std::string cmd = string("fstat -T \"depotFile headChange haveRev headRev headAction action\" //depot/...");
 		string rootPathWildcard = TrimEnd(TrimEnd(task.GetAssetsPath(), '/'), '\\') + "/...";
-		const std::string cmd = string("fstat -T \"depotFile headChange haveRev headRev headAction action\" ") + rootPathWildcard;
+		const std::string cmd = string("fstat -T \"depotFile headChange haveRev headRev headAction action\" \"") + rootPathWildcard + "\"";
 				
 		Pipe().BeginList();
 		
@@ -91,6 +91,8 @@ public:
 		bool headDeleted = false;
 		bool added = false;
 		
+		string verboseLine;
+
 		// Dump out the variables, using the GetVar( x ) interface.
 		// Don't display the function, which is only relevant to rpc.
 		for( i = 0; varList->GetVar( i, var, val ); i++ )
@@ -100,6 +102,7 @@ public:
 			
 			string key(var.Text());
 			string value(val.Text());
+			verboseLine += key + ":" + value + ", ";
 
 			//Pipe().Log().Debug() << "    " << key << " # " << value << endl;
 			
@@ -127,6 +130,8 @@ public:
 				Pipe().Log().Notice() << "Warning: skipping unknown stat variable: " << key << " : " << val.Text() << unityplugin::Endl;
 		}
 
+		Pipe().VerboseLine(verboseLine);
+
 		if (headChange == -1 && added)
 			return; // don't think about files added locally
 		
@@ -136,7 +141,7 @@ public:
 		
 		if (depotFile.empty() || headChange == -1 || headRev == -1)
 		{
-			Pipe().ErrorLine(string("invalid p4 stat result: ") + (depotFile.empty() ? string("no depotFile") : depotFile));
+			Pipe().WarnLine(string("invalid p4 stat result: ") + (depotFile.empty() ? string("no depotFile") : depotFile));
 		} 
 		else if (haveRev != headRev && !syncedDelete)
 		{
@@ -148,11 +153,13 @@ public:
 	void OutputInfo( char level, const char *data )
     {
 		string d(data);
+		Pipe().VerboseLine(d);
+
 		const size_t minLength = 8; // "Change x".length()
 		
 		if (d.length() <= minLength)
 		{
-			Pipe().ErrorLine(string("p4 changelist too short: ") + d);
+			Pipe().WarnLine(string("p4 changelist too short: ") + d);
 			return;
 		}
 		
@@ -160,10 +167,11 @@ public:
 		string::size_type i = d.find(' ', 8);
 		if (i == string::npos)
 		{
-			Pipe().ErrorLine(string("p4 couldn't locate revision: ") + d);
+			Pipe().WarnLine(string("p4 couldn't locate revision: ") + d);
 			return;
 		}
 		
+
 		Changelist item;
 		item.SetDescription(d.substr(i+1));
 		item.SetRevision(d.substr(minLength-1, i - (minLength-1)));

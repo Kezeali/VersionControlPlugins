@@ -44,10 +44,12 @@ public:
 	{
 		string d(data);
 		const size_t minLength = 8; // "Change x".length()
-		
+
+		Pipe().VerboseLine(d);
+
 		if (d.length() <= minLength)
 		{
-			Pipe().ErrorLine(string("p4 changelist too short: ") + d);
+			Pipe().WarnLine(string("p4 changelist too short: ") + d);
 			return;
 		}
 		
@@ -55,7 +57,7 @@ public:
 		string::size_type i = d.find(' ', 8);
 		if (i == string::npos)
 		{
-			Pipe().ErrorLine(string("p4 couldn't locate revision: ") + d);
+			Pipe().WarnLine(string("p4 couldn't locate revision: ") + d);
 			return;
 		}
 		
