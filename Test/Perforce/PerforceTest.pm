@@ -2,8 +2,10 @@ use File::Path;
 
 if ($ENV{'TARGET'} eq "win32")
 {
-	eval "use Win32::Process";
-    eval "use Win32";
+BEGIN {
+	eval("use Win32::Process;");
+	eval("use Win32;");
+}
 }
 
 sub PerforceIntegrationTests
@@ -17,9 +19,18 @@ sub PerforceIntegrationTests
 	$ENV{'P4ROOT'} = "Test/tmp/testserver";
 	$ENV{'P4PORT'} = "localhost:1667";
 	$ENV{'P4CLIENTROOT'} = "Test/tmp/testclient";
+	$ENV{'P4CLIENTROOTABS'} = $ENV{'PWD'} . "/" . $ENV{'P4CLIENTROOT'};
 	$ENV{'P4CLIENT'} = "testclient";
 	$ENV{'P4CHARSET'} = 'utf8';
 	$ENV{'P4PASSWD'} = 'secret';
+	
+	if ($ENV{'TARGET'} eq "win32")
+	{
+		$ENV{'P4ROOT'} =~ s/\//\\/g;
+		$ENV{'P4CLIENTROOT'} =~ s/\//\\/g;
+		$ENV{'P4CLIENTROOTABS'} =~ s/\//\\/g;
+	}
+
 	$pid = SetupServer();
 	sleep(1);
 	SetupClient();
@@ -49,13 +60,19 @@ sub RunTests()
 		$output = `$testserver $pluginexec $i $option '$clientroot'`;
 		$res = $? >> 8;
 		print $output;
-		if ($? == 0)
+		if ($res == 0)
 		{
 			$success++;
 		}
 		elsif ($? == -1)
 		{
 			print "Error running test : $!\n";
+			return;
+		}
+		else
+		{
+			print "Test failed -> stopping all tests\n";
+			return;
 		}
 		$total++;
 	}
@@ -69,7 +86,7 @@ sub SetupServer
 	rmtree($root);
 	mkdir $root;
 	system("$ENV{'P4DEXEC'} -xi -r \"$root\"");
-	return SpawnSubProcess("$ENV{'P4DEXEC'} -r \"$root\" -p 1667");
+	return SpawnSubProcess($ENV{'P4DEXEC'}, " -r \"$root\" -p 1667");
 }
 
 sub TeardownServer
@@ -82,7 +99,7 @@ sub TeardownServer
 
 sub SetupClient
 {
-	$root = $ENV{'P4CLIENTROOT'};
+	$root = $ENV{'P4CLIENTROOTABS'};
 	#print "Login in to server\n";
 	#system("$ENV{'P4EXEC'} -p $ENV{'P4PORT'} login");
 	print "Setting up workspace $ENV{'P4CLIENT'} in $root\n";
@@ -141,6 +158,7 @@ sub SpawnSubProcess
 
 	if ($ENV{'TARGET'} eq "win32")
 	{
+		$ProcessObj = 1;
 		Win32::Process::Create($ProcessObj,
 							   $exec_,
 							   $args_,

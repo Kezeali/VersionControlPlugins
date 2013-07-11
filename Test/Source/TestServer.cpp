@@ -1,8 +1,10 @@
 #include "ExternalProcess.h"
+#include "Utility.h"
 #include <iostream>
 #include <fstream>
 #include <exception>
 #include <stdlib.h>
+#include <time.h>
 
 using namespace std;
 
@@ -41,15 +43,128 @@ bool noresults;
 string root;
 string absroot;
 
-static void replaceRoot(string& str)
+static void ConvertSeparatorsFromWindows( string& pathName )
 {
-	string::size_type i = str.find(root);
-	if (i != string::npos)
-		str.replace(i, root.length(), "<root>");
+	for (string::iterator i = pathName.begin(); i != pathName.end(); ++i)
+		if (*i == '\\')
+			*i = '/';
+}
 
-	i = str.find(absroot);
-	if (i != string::npos)
+static void UnescapeString(string& target)
+{
+	string::size_type len = target.length();
+	std::string::size_type n1 = 0;
+	std::string::size_type n2 = 0;
+
+	while ( n1 < len && (n2 = target.find('\\', n1)) != std::string::npos &&
+		n2+1 < len )
+	{
+		char c = target[n2+1];
+		if ( c == '\\' )
+		{
+			target.replace(n2, 2, "\\");
+			len--;
+		}
+		else if ( c == 'n')
+		{
+			target.replace(n2, 2, "\n");
+			len--;
+		}
+		n1 = n2 + 1;
+	}
+}
+
+static void EscapeNewline(string& str)
+{
+	string::size_type i = str.find('\n');
+	while (i != string::npos)
+	{
+		str.replace(i, 1, "\\n");
+		i = str.find('\n');
+	}
+}
+
+static void replaceRootTagWithPath(string& str)
+{
+	string::size_type i = str.find("<absroot>");
+
+	while (i != string::npos)
+	{
+		str.replace(i, 9, absroot);
+		i = str.find("<absroot>");
+	}
+
+	i = str.find("<root>");
+	while (i != string::npos)
+	{
+		str.replace(i, 6, root);
+		i = str.find("<root>");
+	}
+}
+
+static void replaceRootPathWithTag(string& instr)
+{
+	string str = instr;
+	ConvertSeparatorsFromWindows(str);
+	string::size_type i = str.find(absroot);
+	bool replacedSomething = false;
+
+	while (i != string::npos)
+	{
 		str.replace(i, absroot.length(), "<absroot>");
+		i = str.find(absroot);
+		replacedSomething = true;
+	}
+
+#ifdef WIN32
+	// Need this hack because p4 on windows create result paths like
+	// c:/foo/bar\tmp/client/path
+	// ie. backslash and slash as path separator mixed in some cases
+	string wabsroot = absroot;
+	ConvertSeparatorsFromWindows(wabsroot);
+	i = str.find(wabsroot);
+	while (i != string::npos)
+	{
+		str.replace(i, wabsroot.length(), "<absroot>");
+		i = str.find(wabsroot);
+		replacedSomething = true;
+	}
+	
+	string wroot = root;
+	ConvertSeparatorsFromWindows(wroot);
+	i = str.find(wroot);
+	while (i != string::npos)
+	{
+		str.replace(i, wroot.length(), "<root>");
+		i = str.find(wroot);
+		replacedSomething = true;
+	}
+#endif
+
+	i = str.find(root);
+	while (i != string::npos)
+	{
+		str.replace(i, root.length(), "<root>");
+		i = str.find(root);
+		replacedSomething = true;
+	}
+	if (replacedSomething)
+		instr.swap(str);
+
+#ifdef _WIN32_NOTDEFINED
+	string wroot = root;
+	ConvertSeparatorsFromWindows(wroot);
+	i = str.find(wroot);
+	if (i != string::npos)
+		str.replace(i, wroot.length(), "<root>");
+
+	string wabsroot = absroot;
+	ConvertSeparatorsFromWindows(wabsroot);
+	i = str.find(wabsroot);
+	if (i != string::npos)
+		str.replace(i, wabsroot.length(), "<root>");
+#endif
+	
 }
 
 int run(int argc, char* argv[])
@@ -57,8 +172,15 @@ int run(int argc, char* argv[])
 	newbaseline = argc > 3 ? string(argv[3]) == "newbaseline" : false;
 	noresults = newbaseline;
 	verbose = argc > 3 ? string(argv[3]) == "verbose" && !newbaseline : false;
-	root = argc > 4 ? argv[4] : "";
+	root = Trim(argc > 4 ? argv[4] : "", '\'');
+#ifdef _WIN32
+	absroot = string(getenv("PWD")) + "\\" + root;
+#else
 	absroot = string(getenv("PWD")) + "/" + root;
+#endif
+
+	cout << "Root:    " << root <<  endl;
+	cout << "AbsRoot: " << absroot <<  endl;
 
 	if (verbose)
 		cout << "Plugin : " << argv[1] << endl;
@@ -73,7 +195,7 @@ int run(int argc, char* argv[])
 static int runScript(ExternalProcess& p, const string& scriptPath, const string& indent)
 {
 	if (!noresults)
-		cout << indent << "Testing " << scriptPath << " ";
+		cout << indent << "Testing " << scriptPath << " " << flush;
 
 	if (verbose)
 		cout << endl;
@@ -82,6 +204,7 @@ static int runScript(ExternalProcess& p, const string& scriptPath, const string&
 
 	const int BUFSIZE = 4096;
 	char buf[BUFSIZE];
+	buf[0] = 0x00;
 
 	const string restartline = "<restartplugin>";
 	const string includeline = "<include ";
@@ -91,6 +214,7 @@ static int runScript(ExternalProcess& p, const string& scriptPath, const string&
 	const string regextoken = "==:";
 	const string exittoken = "<exit>";
 	const string ignoretoken = "<ignore>";
+	const string genfiletoken = "<genfile ";
 
 	bool ok = true;
 	while (testscript.good())
@@ -100,6 +224,8 @@ static int runScript(ExternalProcess& p, const string& scriptPath, const string&
 		while (testscript.getline(buf, BUFSIZE))
 		{
 			string command(buf);
+			
+			replaceRootTagWithPath(command);
 
 			if (verbose || newbaseline)
 				cout << command << endl;
@@ -140,8 +266,26 @@ static int runScript(ExternalProcess& p, const string& scriptPath, const string&
 				continue;
 			}
 
-			p.Write(buf);
-			p.Write("\n");
+			if (command.find(genfiletoken) == 0)
+			{
+				// Generate and posssibly overwrite a file
+				string genfile = command.substr(9, command.length() - 1 - 9);
+				{
+					fstream f(genfile.c_str(), ios_base::trunc | ios_base::out);
+					f << "Random: " << rand() 
+					  << "\nTime: " << time(0) 
+					  << "\nRandom: " << rand() << endl;
+					f.flush();
+				}
+
+				continue;
+			}
+
+			if (!command.empty())
+			{
+				p.Write(command);
+				p.Write("\n");
+			}
 		}
 
 		while (testscript.getline(buf, BUFSIZE))
@@ -166,7 +310,9 @@ static int runScript(ExternalProcess& p, const string& scriptPath, const string&
 			}
 
 			string msg = p.ReadLine();
-			replaceRoot(msg);
+			UnescapeString(msg);
+			replaceRootPathWithTag(msg);
+			EscapeNewline(msg);
 			if (expect.find(regextoken) == 0)
 			{
 				// TODO: implement regex match
@@ -193,9 +339,12 @@ static int runScript(ExternalProcess& p, const string& scriptPath, const string&
 					try 
 					{
 						cerr << "             reading as much as possible from plugin:" << endl;
+						cerr << msg << endl;
 						do {
 							string l = p.ReadLine();
-							replaceRoot(l);
+							UnescapeString(msg);
+							replaceRootPathWithTag(l);
+							EscapeNewline(msg);
 							cerr << l << endl;
 						} while (true);
 
@@ -213,6 +362,30 @@ static int runScript(ExternalProcess& p, const string& scriptPath, const string&
 	return 0;
 }
 
+#if defined(_WIN32)
+
+void printStatus(bool ok)
+{
+	if (noresults)
+		return;
+	cout.flush();
+
+	HANDLE hcon = GetStdHandle(STD_OUTPUT_HANDLE);
+	CONSOLE_SCREEN_BUFFER_INFO conBufInfo;
+	GetConsoleScreenBufferInfo(hcon, &conBufInfo);
+
+	SetConsoleTextAttribute(hcon, ok ? FOREGROUND_GREEN : FOREGROUND_RED);
+	
+	if (ok)
+		cout << "OK" << endl;
+	else
+		cout << "Failed" << endl;
+	;
+	SetConsoleTextAttribute(hcon, conBufInfo.wAttributes);
+	cout.flush();
+}
+
+#else
 void printStatus(bool ok)
 {
 	const char * redColor = "\033[;1;31m";
@@ -227,3 +400,4 @@ void printStatus(bool ok)
 	else
 		cout << redColor << "Failed" << endColor << endl;
 }
+#endif
